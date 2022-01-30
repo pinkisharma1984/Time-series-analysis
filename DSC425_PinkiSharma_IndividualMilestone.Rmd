@@ -1,0 +1,692 @@
+---
+title: "IndiviualMilestone"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## load packages
+```{r}
+library(ggplot2)
+library(ggfortify)
+library(forecast)
+library(tseries)
+library(lmtest)
+library(fUnitRoots)
+library(TSA)
+library(dynlm)
+library(astsa)
+library(fpp2)
+library(vars)
+library(zoo)
+library(timeSeries)
+library(fBasics)
+library(fpp2)
+library(lubridate)
+library(corrplot)
+
+source("backtest.R")
+```
+
+## load data
+```{r}
+setwd("C:/Users/shivk/Desktop/DSC425/Project/")
+covid = read.csv("covid_data.csv")
+```
+```{r}
+## view data
+head(covid) 
+tail(covid)
+```
+
+# date formating
+```{r}
+names(covid)[1] <- "Date"
+head(covid)
+covid$Date = mdy(covid$Date)
+head(covid)
+```
+
+## data cleaning
+```{r}
+# cleaning of data starts
+covid = covid[!is.na(covid$New.Deaths), ]
+covid
+covid = tail(covid,609)
+covid
+```
+
+# creating time series object for new deaths
+```{r}
+covidDeathsTS = (ts(covid$New.Deaths,frequency=7))
+autoplot(covidDeathsTS,main = "Time series of daily new deaths")
+plot(decompose(covidDeathsTS))
+ldeathsTS = log(covidDeathsTS)
+autoplot(ldeathsTS)
+```
+
+## exploratory analysis for new deaths time series
+```{r}
+qqnorm(ldeathsTS)
+qqline(ldeathsTS)
+skewness(ldeathsTS)
+hist(ldeathsTS)
+normalTest(method = c("jb","jb"),ldeathsTS) # not normal distributed
+
+```
+
+# checking how many differenece required for the series
+```{r}
+ndiffs(ldeathsTS)# number of difference required to make it stationary.
+nsdiffs(ldeathsTS) # number of difference required for a seasonally stationary
+```
+# test
+```{r}
+ # include mean = zero so,no trend and drift # seasonality
+t.test(diff(ldeathsTS))
+# # Run basic unit root tests
+adfTest(ldeathsTS, type="nc") # fail to reject unit root 
+kpss.test(ldeathsTS, null="Level") # reject level stationary
+
+#  How about the trend versions
+adfTest(ldeathsTS,type="ct") # pvalue=0.01 < 0.05  reject unit root
+kpss.test(ldeathsTS,null="Trend") # reject trend stationary
+
+```
+
+
+# ACF Pacf plot of log of new death
+```{r}
+Acf(ldeathsTS, lwd=2)
+pacf(ldeathsTS)
+eacf(ldeathsTS)
+
+Acf(diff(ldeathsTS)) # 
+pacf(diff(ldeathsTS))
+eacf(diff(ldeathsTS)) # AR(1)MA(2) or AR(1)MA(3)
+```
+
+# checking for seasonality order
+```{r}
+# we knew there is seasonal effect with no trend  so to find seasonal order i am taking difference of 7 as is it weekly seasonal
+diff7=diff(ldeathsTS, 7)
+diff7
+plot(diff7)
+Acf(diff7)
+pacf(diff7)
+eacf(diff7) # AR(1) and MA(1)
+```
+
+
+# creating a model for ldeaths series
+```{r}
+# Manual model building
+M1 = Arima(ldeathsTS, order= c(1,1,3), seasonal = list(order= c(0,1,1),period=7))
+M1                           # best model
+coeftest(M1)
+plot(M1$residuals)
+Acf(M1$residuals)
+Box.test(M1$residuals, lag = 6,type = "Ljung") 
+
+M2 = Arima(ldeathsTS, order= c(1,1,2), seasonal = list(order= c(1,1,1),period=7))
+M2                 # rejected model
+coeftest(M2)
+plot(M2$residuals)
+Acf(M2$residuals)
+Box.test(M2$residuals, lag = 8,type = "Ljung") 
+
+M3 = Arima(ldeathsTS, order= c(1,2,2), seasonal = list(order= c(1,1,1),period=7))
+M3               # rejected model
+coeftest(M3)
+plot(M3$residuals)
+Acf(M3$residuals)
+Box.test(M3$residuals, lag = 14,type = "Ljung") 
+
+M4 = Arima(ldeathsTS, order= c(1,2,2), seasonal = list(order= c(0,1,1),period=7))
+M4             # model is good but not better than M1
+coeftest(M4)
+plot(M4$residuals)
+Acf(M4$residuals)
+Box.test(M4$residuals, lag = 5,type = "Ljung")
+```
+```{r}
+## using autoarima
+aM5 = auto.arima(ldeathsTS,ic="bic", method ="CSS")
+aM5      # give white noise but many coefficient are insignificant and model is very complex as having ARMA higher order 
+coeftest(aM5)
+plot(aM5$residuals)
+Acf(aM5$residuals)
+Box.test(aM5$residuals, lag = 6, type = "Ljung-Box")
+```
+```{r}
+# back test to compare with manually build model(best model)`
+backtest(M1,ldeathsTS,1, orig=length(ldeathsTS)*0.9) #mean  absolute percentage error is 0.024 lower than M4(0.025)
+backtest(M4,ldeathsTS,1,orig=length(ldeathsTS)*0.9)
+```
+
+
+# forcasting best model of arima
+```{r}
+f1 = forecast(M1,h=30)
+f1
+plot(f1)
+```
+
+# splitting the data train and test for final  forcasting 
+```{r}
+length(ldeathsTS) #609
+ldeathTrain = subset(ldeathsTS, end = 579)
+ldeathTest = subset(ldeathsTS, start = 580)
+Acf(ldeathTrain)
+eacf(ldeathTrain)
+
+M1S = Arima(ldeathTrain, order= c(1,1,3), seasonal = list(order= c(0,1,1),period=7))
+coeftest(M1S)
+Acf(M1S$residuals)
+Box.test(M1S$residuals, lag = 7, type = "Ljung-Box") # rejected model
+
+
+M1Sa = Arima(ldeathTrain, order= c(2,1,2), seasonal = list(order= c(2,1,1),period=7))
+Acf(M1Sa$residuals)
+coeftest(M1Sa)
+Box.test(M1Sa$residuals, lag = 23, type = "Ljung-Box")  
+
+M1Sb = Arima(ldeathTrain, order= c(1,1,2), seasonal = list(order= c(1,1,0),period=7)) #
+M1Sb                                                 # best model white noise and significant
+coeftest(M1Sb)
+Acf(M1Sb$residuals)
+Box.test(M1Sb$residuals, lag = 7, type = "Ljung-Box")  # rejected model
+
+M1a = auto.arima(ldeathTrain, ic="bic") #112 (211)
+M1a
+coeftest(M1a)
+Acf(M1a$residuals)
+Box.test(M1a$residuals, lag = 1, type = "Ljung-Box")  # rejected model
+
+backtest(M1Sb,ldeathTrain,1, orig=length(ldeathTrain)*0.8) # MAPE =0.024
+
+f =forecast(M1Sb,ldeathTest, h=30)
+autoplot(f) + (geom_line(aes(x=time(ldeathTest), y=ldeathTest, color="red")))
+```
+
+
+# Harmonic Regression
+```{r}
+# create spectrum
+spectrum(ldeathTrain, log="no", spans=c(2,2), plot=T, lwd=2, xlab="Frequency (Cycles/week)")# weekly and semi weekly
+harmonics1 <- fourier(ldeathTrain, K = 1)
+harmonics <- fourier(ldeathTrain, K = 2)
+
+# linear model
+# So, let's fit an initial model with tslm
+HFit1 = tslm(ldeathTrain ~ fourier(ldeathTrain, K = 1))
+summary(HFit1)
+autoplot(HFit1$residuals)
+
+Acf(HFit1$residuals)  # AR 
+adfTest(HFit1$residuals)  # Rejects unit root
+kpss.test(HFit1$residuals) # reject stationary
+autoplot(forecast(HFit1, data.frame(fourier(ldeathsTS, K=1, h=30))))
+
+# arima model with harmonic regression without seasonal order
+
+HFit2 = Arima(ldeathTrain, order=c(1, 1, 3),xreg = fourier(ldeathTrain, c(1)))
+summary(HFit2)
+coeftest(HFit2)
+Acf(HFit2$residuals, lwd=2, lag.max=30)  # seasonality term is there 
+Box.test(HFit2$residuals, lag = 7, type = "Ljung-Box") # because of seasonality
+
+# Harmonic regression model using arma order and seasonality order
+
+HFit3 = Arima(ldeathTrain, order=c(1, 1, 3), seasonal=list(period=7, order=c(1, 0, 1)),xreg = harmonics1)
+summary(HFit3)                     # best model 
+coeftest(HFit3)
+Acf(HFit3$residuals, lag.max= 30)
+plot(HFit3$residuals)
+Box.test(HFit3$residuals, lag = 23, type = "Ljung-Box") # white noise 
+
+HFit4 = Arima(ldeathTrain, order=c(1, 1, 2), seasonal=list(period=7, order=c(1, 0, 1)),xreg = harmonics1)
+summary(HFit4)                    
+coeftest(HFit4)
+Acf(HFit4$residuals)
+plot(HFit4$residuals)
+Box.test(HFit4$residuals, lag = 7, type = "Ljung-Box") # white noise 
+
+# using auto.arima
+aHFit5 = auto.arima(ldeathTrain,xreg = harmonics, ic="bic")
+summary(aHFit5)
+coeftest(aHFit5)  
+Acf(aHFit5$residuals, lwd=2, lag.max=30)  
+plot(aHFit5$residuals)   # rejected
+
+aHfit3 <- auto.arima(ldeathTrain, xreg = harmonics1, ic="bic")
+Acf(aHfit3$residuals, lag.max= 30)
+plot(aHfit3$residuals)
+Box.test(aHfit3$residuals, lag = 6, type = "Ljung-Box")
+######
+backtest(HFit3,ldeathTrain,1, orig=length(ldeathTrain)*0.9) # MAPE= 0.0175
+
+#####
+# forecasting
+nharmonics <- fourier(ldeathTest, K = 1)
+f2= forecast(HFit3, xreg=nharmonics)
+autoplot(f2) + (geom_line(aes(x=time(ldeathTest), y=ldeathTest, color="red")))
+```
+
+# comparing harmonic model with normal arima model
+```{r}
+# Harmonic regression for daily new deaths
+backtest(HFit3,ldeathTrain,1, orig=length(ldeathTrain)*0.9) # MAPE= 0.0175
+#Regualar SARIMA model for daily new deaths
+backtest(M1Sb,ldeathTrain,1, orig=length(ldeathTrain)*0.9) # MAPE =0.024
+```
+
+
+# : Cross correlation with predictor: lNewCasesTS
+```{r}
+covid = covid[!is.na(covid$New.Cases), ]
+covid
+covid = covid[!is.na(covid$Daily.Fully.Vaccinated), ]
+covid
+DeathsTS = subset(covidDeathsTS,start=3)
+covidNewDeathsTS = (ts(covid$New.Deaths, frequency=7))
+autoplot(covidNewDeathsTS,main = "daily frequency")
+lNewDeathsTS = log(covidNewDeathsTS)
+autoplot(lNewDeathsTS)
+
+covidNewCasesTS = ts(covid$New.Cases,frequency=7)
+plot(covidNewCasesTS,main = "daily frequency")
+lNewCasesTS = log(covidNewCasesTS)
+autoplot(lNewCasesTS)
+
+covidVaccineTS = ts(covid$Daily.Fully.Vaccinated,frequency=7)
+plot(covidVaccineTS,main = "daily frequency")
+lVaccineTS = log(covidVaccineTS)
+autoplot(lVaccineTS)
+
+s = ts(cbind(covidNewDeathsTS,covidNewCasesTS,covidVaccineTS), class = "mts")
+autoplot(s, facets = T, xlab = "Years", ylab = "number",main ="Time series plot of all series")
+
+autoplot((lNewDeathsTS), series="New death",  xlab = "Years", ylab = "number",main ="Time series plot of all series") + 
+  autolayer((lNewCasesTS), series="New cases") +
+  autolayer((lVaccineTS), series="Daily fully vaccination")
+  
+
+s1 = ts(cbind(lNewDeathsTS,lNewCasesTS,lVaccineTS), class = "mts")
+autoplot(s1, facets = T, xlab = "Years", ylab = "number",main ="Time series plot of all series")
+
+
+
+# lag plots of New Deaths  with of the predictors New CASES
+s2a = ts(cbind(lNewDeathsTS,lNewCasesTS), class = "mts")
+
+lag2.plot(lNewCasesTS,lNewDeathsTS,8)
+
+# cross-correlation plot for each
+ccf(lNewCasesTS,lNewDeathsTS)
+ccf(lNewCasesTS,lNewDeathsTS, lag.max= 30) # max.mum lag at -14
+
+#######
+##splitting data into train and test
+length(lNewDeathsTS) #322
+lnewdeathTrain = subset(lNewDeathsTS, end = 292)
+lnewdeathTest = subset(lNewDeathsTS, start = 293)
+lNewCasesTrain = subset(lNewCasesTS, end = 292)
+lNewCasesTest = subset(lNewCasesTS, start = 293)
+lVaccineTStrain = subset(lVaccineTS, end = 292)
+lVaccineTstest = subset(lVaccineTS, start = 293)
+s2ab = ts(cbind(lnewdeathTrain,lNewCasesTrain), class = "mts")
+Acf(lnewdeathTrain) # AR 
+eacf(lnewdeathTrain)
+
+ccf(lNewCasesTrain,lnewdeathTrain, lag.max= 30) # lag-14
+
+fit1 = dynlm(lnewdeathTrain ~ lag(lNewCasesTrain, -14))
+summary(fit1)
+sqrt(mean(fit1$residuals^2)) # RMSE = 0.268
+
+fit1a = dynlm(lnewdeathTrain ~ lag(lNewCasesTrain, -14) + lag(lNewCasesTrain, -7) + lag(lNewCasesTrain))
+summary(fit1a)
+sqrt(mean(fit1a$residuals^2)) # RMSE = 0.269 and model is complected too many parameter
+
+#####
+## Now, let's investigate pre-whitening.  Let's build a model for lNewCasesTS
+# Let's look at the ACF structure of lNewCasesTS
+adfTest(lNewCasesTrain)  # fail to reject non stationarity
+kpss.test(lNewCasesTrain)    # Reject stationarity       
+
+ndiffs(lNewCasesTrain)# number of difference required to make it stationary.1,1
+nsdiffs(lNewCasesTrain)
+
+Acf(lNewCasesTrain)  # looking like an AR   
+pacf(lNewCasesTrain)
+eacf(lNewCasesTrain)   
+
+Acf(diff(lNewCasesTrain))
+pacf(diff(lNewCasesTrain))
+eacf(diff(lNewCasesTrain)) # AR(2) we tend to ignore MA terms
+
+## Now, build the model for lNewCasesTS and use it to "pre-whiten" lNewDeathsTS using the
+# TSA "prewhiten" function
+caseFit = Arima(lNewCasesTrain, order=c(2, 1, 0), seasonal=c(1, 1, 0))
+caseFit
+coeftest(caseFit)
+Acf(caseFit$residuals)  # Remember ... we don't have to get rid of everything!
+                       # We just have to get closer to white noise
+
+prewhiten(lNewCasesTrain, lnewdeathTrain, caseFit, lwd = 2) #Only correlation left at lag 0, Once we remove lNewCasesTS's autocorrelation
+                            # So model it with lag-0 and then ARMA on the residuals
+
+
+fit2 = lm(lnewdeathTrain ~ lNewCasesTrain)
+Acf(fit2$residuals) # AR
+pacf(fit2$residuals)   # Looks like an ARMA(?, ?) 
+eacf(fit2$residuals) # AR(2)& MA(1) or AR(1) MA(2)
+
+# let's create arima model 
+fit2a = Arima(lnewdeathTrain, xreg=lNewCasesTrain, order=c(2, 1, 1))
+sqrt(mean(fit2$residuals^2))  # RMSE= 0.44 higher than lagged regression
+
+#Let's try adding autocorrelated error lag-14
+# Manaully
+#Remember, to lag back by 14, we cut off the last -14 of the lagged series and the first 14 of the un-lagged series
+
+fit3 = Arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278), order=c(2, 1, 1),seasonal = list(order=c(1,0,0),period=7))
+coeftest(fit3)
+sqrt(mean(fit3$residuals^2)) # RMSE=0.179 smaller than lagged regression
+Acf(fit3$residuals)
+Box.test(fit3$residuals, lag=6, type ="Ljung-Box") # white noise
+
+fit3a = Arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278), order=c(2, 1, 2),seasonal = list(order=c(0,0,1),period=7))
+coeftest(fit3a)
+sqrt(mean(fit3a$residuals^2)) # RMSE =0.183 
+Acf(fit3a$residuals)
+Box.test(fit3a$residuals, lag=14, type ="Ljung-Box") # no white noise
+
+fit3b = Arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278), order=c(1, 1, 1),seasonal = list(order=c(1,0,0),period=7))
+fit3b
+
+fit3c = Arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278), order=c(1, 1, 3),seasonal = list(order=c(1,0,0),period=7))
+coeftest(fit3c)            # all coefficient not significant
+sqrt(mean(fit3c$residuals^2)) # RMSE=0.179 smaller than lagged regression
+Acf(fit3c$residuals)
+Box.test(fit3c$residuals, lag=7, type ="Ljung-Box") # white noise
+
+# best model of cross correlation
+fit3d = Arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278), order=c(1, 1, 1),seasonal = list(order=c(0,0,2),period=7))
+coeftest(fit3d)
+sqrt(mean(fit3d$residuals^2)) # RMSE=0.182 smaller than lagged regression 
+Acf(fit3d$residuals)
+Box.test(fit3d$residuals, lag=14, type ="Ljung-Box") # white noise 
+checkresiduals(fit3d)
+
+# with auto.arima
+
+fit4 = auto.arima(subset(lnewdeathTrain, start=15), xreg=subset(lNewCasesTrain, end=278))
+coeftest(fit4)   
+sqrt(mean(fit4$residuals^2)) #RMSE=0.1806
+Acf(fit4$residuals)
+Box.test(fit4$residuals, lag=21, type ="Ljung-Box") # no white noise
+
+# back test for the best model 
+backtest(fit3d,s2ab,1, orig=length(s2ab)*0.9)#mean  absolute percentage error is lower(0.0088)
+
+# Now, we can use the last 14 values of lNewCasesTS to forecast where lNewDeathsTS is going to go!
+
+length(lNewCasesTrain) - 14+ 1  # The last 14 elements of lNewCasesTS are not used in the training 
+                     # set, so we can use them to forecast "lNewDeathsTS" out beyond 
+newcasesTest = subset(lNewCasesTrain, start = length(lNewCasesTrain) - 14 + 1)
+plot(forecast(fit3d, xreg=newcasesTest))
+
+########
+# forecasting the test data
+#f3 =forecast(fit3d, xreg = subset(lNewCasesTest, start=293))
+#autoplot(f3) + geom_line(aes(x=time(lnewdeathTest), y=lnewdeathTest, color="red"))
+#autoplot(f3) + geom_line(aes(x=time(lNewCasesTest), y=lNewCasesTest, color="pink"))
+#plot(f2)
+
+autoplot(forecast(fit3d, xreg=(lNewCasesTest), 30)) + geom_line(aes(x=time(lnewdeathTest), y=lnewdeathTest, color="red"))
+```
+
+# after prewhitening lag-14 with zoo function used 
+```{r}
+###############################################################
+#  second method  without train test split
+#now creating a model with lag -14 with auto regressive error
+s2 = as.zoo(ts.intersect(lnewdeathTrain, lNCasesTS14=lag(lNewCasesTrain, -14)))
+Acf(s)
+pacf(s)
+Lfit1 = Arima(s2$lnewdeathTrain, xreg = (s2$lNCasesTS14), order=c(1, 0, 2),seasonal = list(order= c(0,1,1),period=7))
+coeftest(Lfit1)
+Lfit1
+#autocorrelation in the residuals
+Acf(Lfit1$residuals)
+Box.test(Lfit1$residuals, type ="Ljung-Box")
+
+
+Lfit2 = Arima(s2$lnewdeathTrain, xreg = cbind(s2$lNCasesTS14), order=c(1, 1, 1),seasonal = list(order= c(0,0,2),period=7))
+coeftest(Lfit2)                                     # all parameter is significant
+Lfit2
+Acf(Lfit2$residuals)
+Box.test(Lfit2$residuals, lag=8,type ="Ljung-Box") # best model white noise resdiuals 
+
+
+Lfit3 = Arima(s2$lnewdeathTrain, xreg = cbind(s2$lNCasesTS14), order=c(1, 1, 1),seasonal = list(order= c(0,1,1),period=7))
+coeftest(Lfit3)                         # all coefficient are not significant
+Lfit3
+#autocorrelation in the Model residuals
+Acf(Lfit3$residuals)
+Box.test(Lfit3$residuals, lag=6,type ="Ljung-Box") #  residuals white noise
+
+
+Lfit4 = auto.arima(s2$lNewDeathsTS, xreg = cbind(s2$lNCasesTS14), ic = "bic")
+Lfit4
+coeftest(Lfit4)
+Acf(Lfit4$residuals)
+autoplot(Lfit4$residuals)
+Box.test(Lfit4$residuals, lag=7, type ="Ljung-Box") # no white noise residuals
+checkresiduals(Lfit4, lwd=1)
+
+# back test for the best model 
+backtest(Lfit2,s2a,1, orig=length(s2a)*0.9) # RMSE = 0.0313 
+backtest(Lfit3,s2a,1, orig=length(s2a)*0.9) # RMSE = 0.011 # best model
+
+# forcasting for best model 
+length(lNewCasesTS) - 14+ 1  # The last 14 elements of lNewCasesTS are not used in the training 
+                     # set, so we can use them to forecast "lNewDeathsTS" out beyond 
+newcasesTest2 = subset(lNewCasesTS, start = length(lNewCasesTS) - 14 + 1)
+
+
+# Now, let's run the forecast.  
+plot(forecast(Lfit3, xreg=newcasesTest2))
+```
+
+
+# Cross-correlation using (New deaths with lag predictor vaccine)
+```{r}
+s4 = ts(cbind(lnewdeathTrain,lVaccineTStrain), class = "mts")
+lag2.plot(lVaccineTStrain,lnewdeathTrain,8)
+ccf(lVaccineTStrain,lNewDeathsTS) # lag -19  negative correlation
+
+Cfit1 = dynlm(lnewdeathTrain ~ lag(lVaccineTStrain, -19))
+summary(Cfit1)
+sqrt(mean(Cfit1$residuals^2)) # RMSE = 0.71
+
+Cfit1a = dynlm(lnewdeathTrain ~ lag(lVaccineTStrain, -19) + lag(lVaccineTStrain, -18))
+summary(Cfit1a)
+sqrt(mean(fit1a$residuals^2)) # RMSE = 0.269 but model is complected too many parameter
+
+#####
+## Now, let's investigate pre-whitening.  Let's build a model for lVaccineTStrain
+## Let's look at the ACF structure of lnewdeathTrain
+adfTest(lVaccineTStrain)  # fail reject non stationarity
+kpss.test(lVaccineTStrain)    # Reject stationarity       
+
+ndiffs(lVaccineTStrain)# 2 number of difference required to make it stationary.
+nsdiffs(lVaccineTStrain) # 1
+diff7v=diff(lVaccineTStrain, 7)
+plot(diff7v)
+Acf(diff7v)
+pacf(diff7v)
+eacf(diff7v)
+
+Acf(lVaccineTStrain)  # looking like an AR   
+pacf(lVaccineTStrain)
+eacf(lVaccineTStrain)  #AR(1) and MA(2)
+
+Acf(diff(lVaccineTStrain))
+pacf(diff(lVaccineTStrain))
+eacf(diff(lVaccineTStrain)) # AR(2) we tend to ignore MA terms
+
+## Now, build the model for lNewCasesTS and use it to "pre-whiten" lNewDeathsTS using the
+# TSA "prewhiten" function
+caseFit2 = Arima(lVaccineTStrain, order=c(1, 1, 0), seasonal=c(3, 1, 0))
+caseFit2
+coeftest(caseFit2)
+Acf(caseFit2$residuals)  # Remember ... we don't have to get rid of everything!
+Box.test(caseFit2$residuals, lag=5, type ="Ljung-Box")                       # We just have to get closer to white noise
+caseFit2$coef
+
+prewhiten(lVaccineTStrain, lnewdeathTrain, caseFit2) #Only correlation left at lag -1, Once we remove lVaccineTS's autocorrelation
+                            # So model it with lag -1 
+
+# Let's choose -1 as it is the peak
+Cfit2 = dynlm(lnewdeathTrain ~ lag(lVaccineTStrain, -1))
+summary(Cfit2)
+sqrt(mean(Cfit2$residuals^2))   # RMSE =0.83 higher than lagged regression
+
+Acf(Cfit2$residuals) # AR
+pacf(Cfit2$residuals)   # Looks like an ARMA(?, ?) 
+eacf(Cfit2$residuals) # looks like AR(1)& MA(1) as there is high seasonality
+
+######
+#Let's try an Arima with a lag-1 using auto.Arima
+length(lnewdeathTrain) # 292
+Cfit2a = auto.arima(subset(lnewdeathTrain, start=2), xreg=subset(lVaccineTStrain, end=291)) #ARIMA(0,1,1)(0,1,1)[7]
+coeftest(Cfit2a)   
+sqrt(mean(Cfit2a$residuals^2)) # RMSE= 0.15 lower than lagged regression
+Acf(Cfit2a$residuals) 
+autoplot(Cfit2a$residuals)
+Box.test(Cfit2a$residuals, lag=20, type ="Ljung-Box") # white noise residuals
+checkresiduals(Cfit2a, lwd=1)
+
+########
+# Manaual model
+# Remember, to lag back by 1, we cut off the last 1 of the lagged series and the 1 five of the un-lagged series
+Cfit3 = Arima(subset(lnewdeathTrain, start=2), xreg=subset(lVaccineTStrain, end=291), order=c(1, 1, 1),seasonal = list(order=c(0,1,1),period=7))
+coeftest(Cfit3)
+sqrt(mean(Cfit3$residuals^2)) # RMSE=0.153 lower than lagged regression
+Acf(Cfit3$residuals)
+Box.test(Cfit3$residuals, lag=20, type ="Ljung-Box") # white noise residuals
+
+#######
+# back test for the both manual and auto.arima model 
+backtest(Cfit2a,s4,1, orig=length(s4)*0.9)#mean  absolute percentage error is lower(0.0107) for auto.ARIMa model
+backtest(Cfit3,s4,1, orig=length(s4)*0.9) #MAPE = 0.0105 For manual ARIMA model # best model
+
+
+# Now, we can use the last 1 values of NewCases to forecast where NewDeaths is going to go!
+
+length(lVaccineTStrain) - 1+ 1  # The last 1 elements of lVaccineTS are not used in the training 
+                     # set, so we can use them to forecast "lNewDeathsTS" out beyond 
+lVaccineTest = subset(lVaccineTStrain, start = length(lVaccineTStrain) - 1 + 1)
+f2= (forecast(Cfit3, xreg=lVaccineTest))
+plot(f2)
+
+autoplot(forecast(Cfit3, xreg=(lVaccineTstest), 30)) + geom_line(aes(x=time(lnewdeathTest), y=lnewdeathTest, color="red"))
+```
+
+
+# Cross-corelation using 3 series
+```{r}
+ccf(lNewCasesTrain,lnewdeathTrain) # lag -14 
+ccf(lVaccineTStrain,lnewdeathTrain) # lag -1 after obtain prewhitening used in above approach
+
+s5 = as.zoo(ts.intersect(lnewdeathTrain, lNCasesTS14=lag(lNewCasesTrain, -14), lVaccineTS1=lag(lVaccineTStrain, -1)))
+Acf(s)
+pacf(s)
+Lfit4 = Arima(s5$lnewdeathTrain, xreg = cbind(s5$lNCasesTS14, s5$lVaccineTS1), order=c(0,1,1),seasonal = list(order= c(0,1,1),period=7))
+Lfit4
+coeftest(Lfit4)                               # all coefficient are significant
+Acf(Lfit4$residuals)
+Box.test(Lfit4$residuals, lag= 20, type ="Ljung-Box") # white noise residuals
+
+
+Lfit5 = auto.arima(s5$lnewdeathTrain, xreg = cbind(s5$lNCasesTS14,s5$lVaccineTS1), ic = "bic") # ARIMA(0,1,2)(0,0,2)[7]
+Lfit5
+coeftest(Lfit5)
+Acf(Lfit5$residuals)
+autoplot(Lfit5$residuals)
+Box.test(Lfit5$residuals, lag=21, type ="Ljung-Box") # no white noise residuals
+checkresiduals(Lfit5, lwd=1)
+
+backtest(Lfit5,s1,1, orig=length(s1)*0.9)#mean  absolute percentage error is lower(0.019) for auto.ARIMa model 
+backtest(Lfit4,s1,1, orig=length(s1)*0.9) # MAPE = 0.010 # best model
+
+length(lVaccineTStrain) - 1+ 1  # The last 1 elements of Vaccine are not used in the training 
+                     # set, so we can use them to forecast "rec" out beyond 
+CTest = subset(lNewCasesTrain, start = length(lVaccineTStrain) - 14 + 1)
+VTest = subset(lVaccineTStrain, start = length(lVaccineTStrain) - 1 + 1)
+
+autoplot(forecast(Lfit4, xreg=cbind(lVaccineTstest, lNewCasesTest), 30)) + geom_line(aes(x=time(lnewdeathTest), y=lnewdeathTest, color="red"))
+```
+
+
+# VEctor Autoregression (new cases, new death)
+```{r}
+# investigate auto and cross correlation
+Acf(lNewCasesTrain)
+Acf(lnewdeathTrain)
+ccf(lNewCasesTrain,lnewdeathTrain, lag.max= 30)
+s6 = VARselect(cbind(lnewdeathTrain, lNewCasesTrain ), lag.max=15, type="const")
+s6 
+#the recommended maximum lag for the model using the VARselect function is 8-10
+s6$selection 
+
+Vfit1 = VAR(cbind(lnewdeathTrain, lNewCasesTrain), p=8, type="const") # p = number of lag to consider
+Vfit1
+coeftest(Vfit1)
+serial.test(Vfit1, lags.pt=10, type="PT.asymptotic") # not good
+
+Vfit2 = VAR(cbind(lnewdeathTrain, lNewCasesTrain), p=10, type="const") # p = number of lag to consider
+Vfit2
+coeftest(Vfit2)
+serial.test(Vfit2, lags.pt=10, type="PT.asymptotic") # not good
+
+Vfit3 = VAR(cbind(lnewdeathTrain, lNewCasesTrain), p=6, type="const") # p = number of lag to consider
+Vfit3
+coeftest(Vfit3)
+serial.test(Vfit3, lags.pt=10, type="PT.asymptotic")
+
+```
+
+
+# VEctor Autoregression (new cases, new death and vaccination)
+```{r}
+# VAR 
+
+ccf(lnewdeathTrain,lVaccineTStrain) # lag 18 or 19 highest correlation
+ccf(lNewCasesTrain,lnewdeathTrain) # lag-14
+ccf(lNewCasesTrain,lVaccineTStrain) # lag-18
+
+s2 = VARselect(cbind(lnewdeathTrain, lNewCasesTrain, lVaccineTStrain ), lag.max=10, type="const")
+s2  # BiC is SC here
+#the recommended maximum lag for the model using the VARselect function is 8
+s2$selection
+
+Vfit4 = VAR(cbind(lnewdeathTrain, lNewCasesTrain, lVaccineTStrain), p=10, type="const") # p = number of lag to consider
+Vfit4
+
+serial.test(fit4, lags.pt=15, type="PT.asymptotic")
+
+Vfit5 = VAR(cbind(lnewdeathTrain, lNewCasesTrain, lVaccineTStrain), p=8, type="const")
+coeftest(Vfit5)
+serial.test(Vfit5, lags.pt=10, type="PT.asymptotic")
+
+
+```
+
+
+
+
+
